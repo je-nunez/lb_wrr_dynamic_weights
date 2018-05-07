@@ -33,6 +33,10 @@ For F5 SNMP-based Data Collection Agent for Dynamic Weighted Round Robin
 how to specify custom SNMP OIDs in [https://support.f5.com/csp/article/K14110](https://support.f5.com/csp/article/K14110),
 and [https://support.f5.com/csp/article/K14114](https://support.f5.com/csp/article/K14114).
 
+For an equivalent in the Linux IP Virtual Server (IPVS), see its
+Dynamic Feedback Load Balancing Scheduling, at
+[http://kb.linuxvirtualserver.org/wiki/Dynamic_Feedback_Load_Balancing_Scheduling](http://kb.linuxvirtualserver.org/wiki/Dynamic_Feedback_Load_Balancing_Scheduling)
+
 
 # Draft
 
