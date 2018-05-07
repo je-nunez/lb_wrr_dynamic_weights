@@ -21,6 +21,19 @@ upon OIDs. In all cases, the backend agent informs the load-balancer of the
 current values of several metrics which directly affect the calculation of
 the dynamic weight of the backend instance inside the load-balanced pool.
 
+For the Cisco's Dynamic Feedback Protocol (DFP) Agent Subsystem for Dynamic
+Weighted Round Robin, see
+[https://www.cisco.com/c/en/us/td/docs/ios/12_2sx/feature/guide/dfpsxd1.html](https://www.cisco.com/c/en/us/td/docs/ios/12_2sx/feature/guide/dfpsxd1.html),
+[https://www.cisco.com/c/en/us/td/docs/ios/slb/configuration/guide/slb_cg_book/slb_cg_info.html] (https://www.cisco.com/c/en/us/td/docs/ios/slb/configuration/guide/slb_cg_book/slb_cg_info.html),
+and [https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/slb/configuration/15-s/slb-15-s-book.pdf](https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/slb/configuration/15-s/slb-15-s-book.pdf)
+
+For F5 SNMP-based Data Collection Agent for Dynamic Weighted Round Robin
+(called Dynamic Ratio by F5), see
+[https://support.f5.com/csp/article/K9125](https://support.f5.com/csp/article/K9125),
+how to specify custom SNMP OIDs in [https://support.f5.com/csp/article/K14110](https://support.f5.com/csp/article/K14110),
+and [https://support.f5.com/csp/article/K14114](https://support.f5.com/csp/article/K14114).
+
+
 # Draft
 
       mkdir ~/.snmp/
