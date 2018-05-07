@@ -1,0 +1,87 @@
+DYNAMIC-WEIGHT-BACK-PROCESS-MIB DEFINITIONS ::= BEGIN
+
+
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32,
+    enterprises                             FROM SNMPv2-SMI
+    -- Counter32
+    MODULE-COMPLIANCE, OBJECT-GROUP         FROM SNMPv2-CONF
+;
+
+dynamicRatioSnmpDcaBaseModule MODULE-IDENTITY
+    LAST-UPDATED "201805060000Z"
+    ORGANIZATION "www.none.com"
+    CONTACT-INFO
+	 "postal:   None
+
+          email:    none@none.com"
+    DESCRIPTION
+	"Custom MIB objects for an agent module to answer Dynamic Ratio SNMP DCA BASE
+         in order to do server-process monitoring."
+    REVISION      "201805060000Z"
+    DESCRIPTION
+	"First draft"
+    ::= { enterprises 99999 }  -- "enterprises 99999" is a fake enterprise
+
+
+
+dynamicRatioProcessStats OBJECT-GROUP
+    OBJECTS { dynamicRatioProcessCpu,
+              -- others process stats, even custom process health logic
+              dynamicRatioProcessMemory }
+    STATUS  current
+    DESCRIPTION
+            "The group with the server process stats, e.g., CPU metrics,
+            RAM, etc, even custom process health metrics."
+    ::= { dynamicRatioSnmpDcaBaseModule 1 }
+
+
+processMonBasicCompliance MODULE-COMPLIANCE
+    STATUS  current
+    DESCRIPTION
+            "Draft compliance."
+    MODULE
+        -- MANDATORY-GROUPS { dynamicRatioProcessStats }
+        GROUP dynamicRatioProcessStats
+        DESCRIPTION
+            "[Draft] a group for process monitoring."
+    ::= { dynamicRatioSnmpDcaBaseModule 2 }
+
+
+dynamicRatioProcess  OBJECT IDENTIFIER ::= { dynamicRatioSnmpDcaBaseModule 3 }
+
+
+dynamicRatioProcessCpu OBJECT-TYPE
+    SYNTAX      Integer32    -- or Counter32, if it measures accumulated time
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"The metric for the CPU of the server-process.
+	 There are many metrics for the CPU of a server process, e.g.,
+         kernel CPU time, user CPU time, etc. If each of these metrics
+         will have a different threshold or coefficient in the weighted
+         round robin in the Load Balancer, then each metric should have
+         a separate OID.
+	 Furthermore, if any of these metrics counts accumulated time,
+         then it should be declared as Counter32 and not as Integer32."
+    ::= { dynamicRatioProcess 1 }
+
+dynamicRatioProcessMemory OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"The metric for the memory used by the server-process.
+	 Same comments here as for 'dynamicRatioProcessCpu' above.
+	 E.g., there is resident, shared, virtual, swapped, etc.,
+         memory, and, if each of these metrics will have a different
+         threshold or coefficient in the weighted round robin in the
+         Load Balancer, then each metric should have a separate OID."
+    DEFVAL { 1 }
+    ::= { dynamicRatioProcess 2 }
+
+-- other custom process health metrics that can influence the dynamic
+-- ration calculated by Weighted Round Robin by the the Load Balancer,
+-- like IOPS metrics, etc.
+
+END
