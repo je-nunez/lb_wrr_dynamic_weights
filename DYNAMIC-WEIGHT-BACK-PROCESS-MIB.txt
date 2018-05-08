@@ -51,6 +51,19 @@ processMonBasicCompliance MODULE-COMPLIANCE
 dynamicRatioProcess  OBJECT IDENTIFIER ::= { dynamicRatioSnmpDcaBaseModule 3 }
 
 
+-- Process health metrics that can influence the dynamic ratio
+-- calculated by Weighted Round Robin in the Load Balancer are
+-- declared below, like CPU load, available memory remaining, IOPS and
+-- network latencies and loads, etc. The metrics don't need to be
+-- specific to the backend process alone, they can be contextual
+-- metrics about the container, virtual machine, or or host where the
+-- backend process is running. E.g., to take those dynamic contextual
+-- metrics from Kubernetes Heapster through the Metrics API at
+-- /apis/metrics.k8s.io/v1beta1 or custom metrics at
+-- /apis/custom.metrics.k8s.io/v1beta1; or from DRS (Distributed
+-- Resource Scheduler) about the health of its vm and host, like its
+-- recommendations.
+
 dynamicRatioProcessCpu OBJECT-TYPE
     SYNTAX      Integer32    -- or Counter32, if it measures accumulated time
     MAX-ACCESS  read-only
@@ -80,8 +93,7 @@ dynamicRatioProcessMemory OBJECT-TYPE
     DEFVAL { 1 }
     ::= { dynamicRatioProcess 2 }
 
--- other custom process health metrics that can influence the dynamic
--- ration calculated by Weighted Round Robin by the the Load Balancer,
--- like IOPS metrics, etc.
+-- ... More metrics that can influence the dynamic ratio for this backend
+-- process calculated by Weighted Round Robin in the Load Balancer ...
 
 END

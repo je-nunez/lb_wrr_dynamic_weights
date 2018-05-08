@@ -9,9 +9,22 @@
 #include "dynamicRatioProcess.h"
 
 
-// TODO: Review backend process metrics
-static u_long   my_custom_cpu = 1;
-static u_long   my_custom_memory = 1;
+// TODO: Review backend process metrics. These also include contextual
+//       metrics about the health of the container, virtual machine
+//       and/or hypervisor, like using Kubernetes Metrics API or
+//       from DRS.
+static struct backend_process_metrics {
+    u_long   metric_cpu;
+    u_long   metric_memory;
+    // ... other metrics (weights) relevant for the dynamic weighted round
+    // robin in the load balancer.
+
+    // struct timespec last_time_updated;
+    // "last_time_updated" is to avoid querying backend information sources
+    // which don't update its information 10-20 second like the load balancer
+    // queries these weights, but only every N minutes, like DRS (5 minutes
+    // by default)
+} my_backend_process_metrics;
 
 
 /** Initializes the dynamicRatioProcess module */
@@ -46,14 +59,24 @@ handle_dynamicRatioProcessCpu(netsnmp_mib_handler *handler,
 
     /* a instance handler also only hands us one request at a time, so
        we don't need to loop over a list of requests; we'll only get one. */
-    
+
     switch(reqinfo->mode) {
 
         case MODE_GET:
-            /* TODO: update CPU backend process metric */,
-            snmp_set_var_typed_value(requests->requestvb, ASN_INTEGER,
-                                     (u_char *) &my_custom_cpu,
-                                     sizeof(my_custom_cpu));
+            /* TODO: update CPU backend process metric in
+             *       struct my_backend_process_metrics above from the local
+             *       /proc/<backend_pid>/stat file.
+             *       For other metrics, it may be necessary to query other
+             *       APIs, like for cluster-wide metrics/recommendations
+             *       from Kubernetes Metrics API, DRS, etc, waiting
+             *       probably N minutes before refreshing our internal
+             *       values from these systems, which don't update their
+             *       metrics every 10-20 seconds that the load balancer
+             *       queries for the current dynamic metrics. */
+            snmp_set_var_typed_value(requests->requestvb,
+                         ASN_INTEGER,
+                         (u_char *) &my_backend_process_metrics.metric_cpu,
+                         sizeof(my_backend_process_metrics.metric_cpu));
             break;
 
 
@@ -76,14 +99,18 @@ handle_dynamicRatioProcessMemory(netsnmp_mib_handler *handler,
 
     /* a instance handler also only hands us one request at a time, so
        we don't need to loop over a list of requests; we'll only get one. */
-    
+
     switch(reqinfo->mode) {
 
         case MODE_GET:
-            /* TODO: update memory backend process metric */,
-            snmp_set_var_typed_value(requests->requestvb, ASN_INTEGER,
-                                     (u_char *) &my_custom_memory,
-                                     sizeof(my_custom_memory));
+            /* TODO: update memory backend process metric, reading
+             *       /proc/<backend_pid>/{status,statm,maps,smaps}.
+             *       See also as well comment for the CPU backend process
+             *       metric. */
+            snmp_set_var_typed_value(requests->requestvb,
+                         ASN_INTEGER,
+                         (u_char *) &my_backend_process_metrics.metric_memory,
+                         sizeof(my_backend_process_metrics.metric_memory));
             break;
 
 
