@@ -27,6 +27,54 @@ static struct backend_process_metrics {
 } my_backend_process_metrics;
 
 
+static
+long long
+get_pid_cpu_stats(int process_id) {
+
+    unsigned long long utime;   // the signed or unsigned long is given by...
+    unsigned long long stime;   // format specifier %lu or %ld in proc(5) ...
+    long long          cutime;  // (`man 5 proc` for "/proc/[pid]/stat")
+    long long          cstime;
+
+    // Inspired by Sebastien Godard's "pidstat" read_proc_pid_stat()
+    // https://github.com/sysstat/sysstat/blob/master/pidstat.c#L356
+    char pid_stat_fname[PATH_MAX+1];
+    int  pid_stat_fd;
+    char pid_stat_contents[5000];
+    int contents_read;
+
+    sprintf(pid_stat_fname, "/proc/%d/stat", process_id);
+
+    if ((pid_stat_fd = open(filename, O_RDONLY)) < 0)
+        return -1;
+
+    contents_read = read(fd, pid_stat_contents, sizeof pid_stat_contents - 1);
+    close(pid_stat_fd);
+    if (contents_read <= 0)
+       return -2;
+    pid_stat_contents[contents_read] = '\0';
+
+    // scan the beginning of "/proc/%d/stat" till a field after "cstime"
+    // (http://man7.org/linux/man-pages/man5/proc.5.html)
+    int rd;
+    rd = sscanf(
+           pid_stat_contents,
+           "%*d %*s %*c %*d %*d %*d "    // (1) pid ... till ... (6) session
+           "%*d %*d %*u %*lu %*lu %*lu " // (7) tty_nr .. till .. (12) majflt
+           "%*lu %lu %lu %ld %ld %*ld ", // (13) cmajflt .till .. (18) priority
+           &utime, &stime, &cutime, &cstime);
+
+    if (rd != 4)   // couldn't read the four fields above
+        return -3;
+    else
+       return (utime + stime + cutime + cstime);   // we could split these
+                          // values if the load balancer were to be interested
+                          // in, e.g., specifically the user time "utime" spent
+                          // by this backend process, or the kernel time
+                          // "stime" spent by it.
+}
+
+
 /** Initializes the dynamicRatioProcess module */
 void
 init_dynamicRatioProcess(void)
@@ -73,6 +121,20 @@ handle_dynamicRatioProcessCpu(netsnmp_mib_handler *handler,
              *       values from these systems, which don't update their
              *       metrics every 10-20 seconds that the load balancer
              *       queries for the current dynamic metrics. */
+            int pid = 1;   // Placeholder "pid = 1"
+                           // TODO: find the real process-ID of the backend
+                           //       process that the load-balancer is
+                           //       interested in to find its CPU availability.
+
+            long long pid_cpu_usage = get_pid_cpu_stats(pid);
+
+            // TODO: convert "pid_cpu_usage" above to a metric
+            //       "my_backend_process_metrics.metric_cpu" the load-balancer
+            //       can understand for its dynamic weighted round roubin in
+            //       the LB pool of backend-processes.
+
+            // my_backend_process_metrics.metric_cpu = ...
+
             snmp_set_var_typed_value(requests->requestvb,
                          ASN_INTEGER,
                          (u_char *) &my_backend_process_metrics.metric_cpu,
