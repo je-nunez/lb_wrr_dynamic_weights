@@ -3,6 +3,10 @@
  *        $
  */
 
+#include <linux/kernel.h>
+#include <sys/sysinfo.h>
+#include <unistd.h>
+
 #include <net-snmp/net-snmp-config.h>
 #include <net-snmp/net-snmp-includes.h>
 #include <net-snmp/agent/net-snmp-agent-includes.h>
@@ -67,11 +71,62 @@ get_pid_cpu_stats(int process_id) {
     if (rd != 4)   // couldn't read the four fields above
         return -3;
     else
-       return (utime + stime + cutime + cstime);   // we could split these
+        return (utime + stime + cutime + cstime);   // we could split these
                           // values if the load balancer were to be interested
                           // in, e.g., specifically the user time "utime" spent
                           // by this backend process, or the kernel time
                           // "stime" spent by it.
+}
+
+static
+long
+get_os_uptime(void) {
+    struct sysinfo kern_info;
+    int result = sysinfo(&kern_info);
+    if (result != 0)
+        return -1;
+    else
+        return s_info.uptime;
+}
+
+static
+unsigned long long
+get_pid_start_time_ticks(int process_id) {
+
+    unsigned long long start_time_ticks;
+
+    char pid_stat_fname[PATH_MAX+1];
+    int  pid_stat_fd;
+    char pid_stat_contents[5000];
+    int contents_read;
+
+    sprintf(pid_stat_fname, "/proc/%d/stat", process_id);
+
+    if ((pid_stat_fd = open(filename, O_RDONLY)) < 0)
+        return 0;
+
+    contents_read = read(fd, pid_stat_contents, sizeof pid_stat_contents - 1);
+    close(pid_stat_fd);
+    if (contents_read <= 0)
+       return 0;
+    pid_stat_contents[contents_read] = '\0';
+
+    // scan the beginning of "/proc/%d/stat" till a field after
+    // "starttime" (which itself is the field #22 according to
+    // doc: http://man7.org/linux/man-pages/man5/proc.5.html)
+    int rd;
+    rd = sscanf(
+           pid_stat_contents,
+           "%*d %*s %*c %*d %*d %*d "    // (1) pid ... till ... (6) session
+           "%*d %*d %*u %*lu %*lu %*lu " // (7) tty_nr .. till .. (12) majflt
+           "%*lu %*lu %*lu %*ld %*ld %*ld "  // (13) cmajflt till (18) priority
+           "%*ld %*ld %*ld %llu %*lu ", // (19) nice ... till ... (23) vsize
+           &start_time_ticks);
+
+    if (rd != 1)   // couldn't read the field above
+        return 0;
+    else
+        return start_time_ticks;
 }
 
 
@@ -126,21 +181,53 @@ handle_dynamicRatioProcessCpu(netsnmp_mib_handler *handler,
                            //       process that the load-balancer is
                            //       interested in to find its CPU availability.
 
-            long long pid_cpu_usage = get_pid_cpu_stats(pid);
+            long long pid_cpu_usage_ticks = get_pid_cpu_stats(pid);
 
-            // TODO: convert "pid_cpu_usage" above to a metric
-            //       "my_backend_process_metrics.metric_cpu" the load-balancer
-            //       can understand for its dynamic weighted round roubin in
-            //       the LB pool of backend-processes.
+            // these two calls down here, we don't need to call them each
+            // time that "handle_dynamicRatioProcessCpu" is called for an
+            // SNMP GET request, since they are constant after initialization
+            long os_uptime = get_os_uptime();
+            long hertz = sysconf(_SC_CLK_TCK);
+            // TODO: ERROR checking: if (os_uptime < 0) ERROR
 
-            // my_backend_process_metrics.metric_cpu = ...
+            // this call below is not necesarily constant, since the "pid" may
+            // die and another "pid" (process), for the same backend program,
+            // may start. Ie., the "pid" may change across calls to
+            // "handle_dynamicRatioProcessCpu"
+            unsigned long long pid_start_time_ticks =
+                                              get_pid_start_time_ticks(pid);
+            // TODO: ERROR checking: if (pid_start_time_ticks == 0) ERROR
+
+            // how long this process has been running (in seconds)
+            long running_seconds = os_uptime - (pid_start_time_ticks / hertz);
+
+            int pid_cpu_usage_percentage = 100 *
+                            ((pid_cpu_usage_ticks / hertz) / running_seconds);
+            // TODO: the above two calculations find the CPU% used by the
+            // "pid" since the beginning of thee program. Pbby another way
+            // would be to find the CPU% used by the process _since_ the last
+            // call to this function "handle_dynamicRatioProcessCpu", since it
+            // is supposed that the Load-Balancer took some decision on how
+            // much traffic to send to this backend process since the last call
+            // to this (SNMP) function (using dynamic weighted round-robin).
+            // If "pid" has changed since the last call to this function, or if
+            // this is the first time that this function has ever been called,
+            // then we would use the above value "pid_cpu_usage_percentage".
+
+            // TODO: We can't truly use assert() here because this is a
+            // Net-SNMP .SO extension, but in idea:
+            //
+            // assert( 0 <= pid_cpu_usage_percentage );
+            // assert( pid_cpu_usage_percentage <= 100 );
+
+            my_backend_process_metrics.metric_cpu =
+                                             (u_long) pid_cpu_usage_percentage;
 
             snmp_set_var_typed_value(requests->requestvb,
                          ASN_INTEGER,
                          (u_char *) &my_backend_process_metrics.metric_cpu,
                          sizeof(my_backend_process_metrics.metric_cpu));
             break;
-
 
         default:
             /* we should never get here, so this is a really bad error */
