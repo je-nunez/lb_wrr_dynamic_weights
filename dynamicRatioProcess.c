@@ -4,6 +4,7 @@
  */
 
 #include <linux/kernel.h>
+#include <stdbool.h>
 #include <sys/sysinfo.h>
 #include <unistd.h>
 
@@ -129,6 +130,140 @@ get_pid_start_time_ticks(int process_id) {
         return start_time_ticks;
 }
 
+/*
+ * Returns the RSS size (in KB) of a process-id. If there is an error, it
+ * returns a negative number instead.
+ */
+
+static
+long
+get_pid_rss_mem_kb(int process_id) {
+
+    long rss_mem_pages;
+
+    char pid_statm_fname[PATH_MAX+1];
+    int  pid_statm_fd;
+    char pid_statm_contents[5000];
+    int contents_read;
+
+    sprintf(pid_statm_fname, "/proc/%d/statm", process_id);
+
+    if ((pid_statm_fd = open(filename, O_RDONLY)) < 0)
+        return -1;
+
+    contents_read = read(fd, pid_statm_contents,
+                         sizeof pid_statm_contents - 1);
+    close(pid_statm_fd);
+    if (contents_read <= 0)
+       return -2;
+    pid_statm_contents[contents_read] = '\0';
+
+    // scan the beginning of "/proc/%d/statm" till a field after "resident"
+    // (ie., till the field "shared")
+    // doc: http://man7.org/linux/man-pages/man5/proc.5.html)
+    int rd;
+    rd = sscanf(
+           pid_statm_contents,
+           "%*ld %ld %*ld ",   // (1) size (2) resident (3) shared
+           &rss_mem_pages);
+
+    if (rd != 1)   // couldn't read the field above
+        return -3;
+    else {
+        long bytes_in_page = sysconf(_SC_PAGESIZE);
+        return (rss_mem_pages * bytes_in_page / 1024);
+    }
+}
+
+/*
+ * Returns the available memory (in KB) in Linux. If there is an error, it
+ * returns a negative number instead.
+ *
+ * About /proc/meminfo (in `man 5 proc`):
+ *
+ *    Field:
+ *
+ *         MemAvailable %lu (since Linux 3.14)
+ *
+ *              An estimate of how much memory is available for starting new
+ *              applications, ____without swapping____.
+ *
+ *              (___Underscore___ above is ours, since it is relevant for the
+ *               load-balancer to know when to send requests to a backend
+ *               process ___without making it swap___.)
+ *
+ * The `free` program returns the field "MemFree" in the "free" column, and
+ * and returns the field "MemAvailable" in the "available" column.
+ *
+ * The field "MemAvailable" in /proc/meminfo exists since Linux kernel version
+ * 3.14 (released on 30 March 2014) or higher, and some major distributions
+ * don't release yet with this kernel version by default.
+ *
+ * So we prefer to use the field "MemAvailable" in /proc/meminfo if it is found
+ * there. If it is not found, then use the field "MemFree". An alternative is
+ * to call "uname(struct utsname *buf)" to check the version of kernel, and if
+ * it is >= 3.14, then to search for "MemAvailable" in /proc/meminfo, otherwise
+ * to search for "MemFree".
+ */
+
+static
+long
+get_linux_avail_mem_kb(void) {
+
+    long avail_mem_kb = -1;
+    FILE * proc_meminfo;
+    char line[256];
+
+    if ((proc_meminfo = fopen("/proc/meminfo", "r")) == NULL)
+        return -2;
+
+    while (fgets(line, sizeof(line), proc_meminfo)) {
+        bool this_is_mem_avail = false; // if this is "MemAvailable: "
+        char * token_start;             // start of the field-name token
+        if ((token_start = strstr(line, "MemAvailable: ")) != NULL) {
+            this_is_mem_avail = true;
+        } else {
+            token_start = strstr(line, "MemFree: ");
+        }
+        if (token_start == NULL)
+            continue;   // another token we are not interested in
+        else if (token_start != line)
+            continue;  // the token was found, but not at the start of line
+
+        // skip the token (field-name) till the first space following it
+        for (; *token_start != '\0' && *token_start != ' '; token_start ++);
+        // then skip all the spaces before the numeric value
+        for (; *token_start != '\0' && *token_start == ' '; token_start ++);
+
+        long value;
+        int rd = sscanf(token_start, "%ld", &value);
+        if (rd != 1)   // couldn't read the numeric field above
+            continue;  // skip this line
+        // skip the digits of the value
+        for (; *token_start != '\0' && isdigit(*token_start); token_start ++);
+        // skip the spaces before the [optional] unit of measurement
+        for (; *token_start != '\0' && *token_start == ' '; token_start ++);
+
+        // try to understand the [optional] unit of measurement of the value
+        if (*token_start == 'm' || *token_start == 'M')       // MBs
+            avail_mem_kb = value * 1024;
+        else if (*token_start == 'g' || *token_start == 'G')  // GBs
+            avail_mem_kb = value * 1024 * 1024;
+        if (*token_start == 'k' || *token_start == 'K' || // KBs, or
+            *token_start == '\n' || *token_start == '\0') // no unit of measure
+            avail_mem_kb = value;     // KBs is the default unit, if omitted
+        else
+            continue;   // TODO:
+                        // error: it is a unit of measurement we didn't know
+
+        if (this_is_mem_avail)
+            break;     // the value of "MemAvailable:" is immediately good
+    }
+
+    fclose(proc_meminfo);
+    return avail_mem_kb;
+}
+
 
 /** Initializes the dynamicRatioProcess module */
 void
@@ -237,6 +372,7 @@ handle_dynamicRatioProcessCpu(netsnmp_mib_handler *handler,
 
     return SNMP_ERR_NOERROR;
 }
+
 int
 handle_dynamicRatioProcessMemory(netsnmp_mib_handler *handler,
                           netsnmp_handler_registration *reginfo,
@@ -256,6 +392,31 @@ handle_dynamicRatioProcessMemory(netsnmp_mib_handler *handler,
              *       /proc/<backend_pid>/{status,statm,maps,smaps}.
              *       See also as well comment for the CPU backend process
              *       metric. */
+
+            int pid = 1;   // Placeholder "pid = 1"
+                           // TODO: find the real process-ID of the backend
+                           //       process that the load-balancer is
+                           //       interested in to find its RSS RAM
+                           //       availability.
+
+            // we can either return to the load-balancer the memory size of
+            // the process (so the bigger the backend process, probably the
+            // less its weight in the load-balancer -if the load-balancer
+            // gives any weight to the memory size of the backend process);
+            // OR:
+            // return the available memory in the (Linux) system (so the more
+            // the memory still available, then the higher weight this backend
+            // process should have in the load-balancer, all other dimensions
+            // being the same). NOTE: This second for is irrelevant for
+            // JVM -alike- backend processes with max heap size "-Xmx", or with
+            // backend processes with a memory-limit (ulimit -v ...), or
+            // running under a Linux control group, "cgcreate -g memory:..."
+
+            long rss_pid_kb = get_pid_rss_mem_kb(pid);  // the RSS (in KB)
+            long system_avail_mem_kb = get_linux_avail_mem_kb();
+
+            my_backend_process_metrics.metric_memory = rss_pid_kb; // the first
+
             snmp_set_var_typed_value(requests->requestvb,
                          ASN_INTEGER,
                          (u_char *) &my_backend_process_metrics.metric_memory,
