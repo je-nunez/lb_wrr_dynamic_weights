@@ -44,6 +44,34 @@ Dynamic Feedback Load Balancing Scheduling, at
       pwd > ~/.snmp/snmp.conf
       oid=dynamicRatioProcess
       env MIBS="+DYNAMIC-WEIGHT-BACK-PROCESS-MIB" mib2c -c mib2c.scalar.conf  "$oid"
-      env MIBS="+DYNAMIC-WEIGHT-BACK-PROCESS-MIB" mib2c -c subagent.m2c       "$oid"
-      env MIBS="+DYNAMIC-WEIGHT-BACK-PROCESS-MIB" mib2c -c mfd-makefile.m2m   "$oid"
+      # To compile Net-SNMP sub-agent (not used):
+      # env MIBS="+DYNAMIC-WEIGHT-BACK-PROCESS-MIB" mib2c -c subagent.m2c       "$oid"
+
+Once the shared object is compiled, then add in the `snmpd.conf` config file:
+
+      dlmod  dynamicRatioProcess  /<path>/<to>/dynamicRatioProcess.so
+
+and restart `snmpd` after that.
+
+To test, once configured:
+
+      # Get CPU metric of the backend process (its CPU%)
+      # (The OID for the CPU metric is below)
+       
+      snmpget  [-options...]  localhost  1.3.6.1.4.1.99999.3.1.0
+       
+      # Get memory metric of the backend process (its RSS size in KB)
+      # (The OID for the memory metric is below)
+       
+      snmpget  [-options...]  localhost  1.3.6.1.4.1.99999.3.2.0
+
+# TODO
+
+. How to configure the name of the backend process to report through SNMP (or any characteristic of the backend process to distinguish it) -- right now it is reporting now about PID=1, because it doesn't know how to distinguish the backend process to report about.
+
+. Related to the above, handle the case that the backend process has children or "sub-agents" (ie., independent processes with which the backend process communicates through IPC), so that it is not a single PID.
+
+. For the value of the memory metric, to know whether to report to the load-balancer the backend process(es) size, or, alternatively, the available memory (under the rationale that, among a set of backend processes served by the load-balancer, if one of the backend processes happens to be running in a machine or container with more available memory, then the load-balancer should favored it -*if the values of all the other metrics are the same, e.g., health checks, CPU metrics, etc*). Note that, if all the backend processes run in machines or containers with the same amount of *total* memory each one, then the first memory metric (the process(es) size) is related to the second memory metric (the available memory): `available_memory ~ is directly proportional to ~ unique_total_memory - processes_size`, so that for the dynamic weighted round robin in the load-balancer either memory metric may be used (but with different coefficients).
+
+. Other, different metrics about the backend processes, besides the above two (CPU% and a memory metric).
 

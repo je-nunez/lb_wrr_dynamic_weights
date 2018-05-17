@@ -3,6 +3,9 @@
  *        $
  */
 
+#include <ctype.h>
+#include <fcntl.h>
+#include <linux/limits.h>
 #include <linux/kernel.h>
 #include <stdbool.h>
 #include <sys/sysinfo.h>
@@ -33,13 +36,13 @@ static struct backend_process_metrics {
 
 
 static
-long long
+long
 get_pid_cpu_stats(int process_id) {
 
-    unsigned long long utime;   // the signed or unsigned long is given by...
-    unsigned long long stime;   // format specifier %lu or %ld in proc(5) ...
-    long long          cutime;  // (`man 5 proc` for "/proc/[pid]/stat")
-    long long          cstime;
+    unsigned long utime;   // the signed or unsigned long is given by...
+    unsigned long stime;   // format specifier %lu or %ld in proc(5) ...
+    long          cutime;  // (`man 5 proc` for "/proc/[pid]/stat")
+    long          cstime;
 
     // Inspired by Sebastien Godard's "pidstat" read_proc_pid_stat()
     // https://github.com/sysstat/sysstat/blob/master/pidstat.c#L356
@@ -50,10 +53,11 @@ get_pid_cpu_stats(int process_id) {
 
     sprintf(pid_stat_fname, "/proc/%d/stat", process_id);
 
-    if ((pid_stat_fd = open(filename, O_RDONLY)) < 0)
+    if ((pid_stat_fd = open(pid_stat_fname, O_RDONLY)) < 0)
         return -1;
 
-    contents_read = read(fd, pid_stat_contents, sizeof pid_stat_contents - 1);
+    contents_read = read(pid_stat_fd, pid_stat_contents,
+                         sizeof pid_stat_contents - 1);
     close(pid_stat_fd);
     if (contents_read <= 0)
        return -2;
@@ -65,8 +69,8 @@ get_pid_cpu_stats(int process_id) {
     rd = sscanf(
            pid_stat_contents,
            "%*d %*s %*c %*d %*d %*d "    // (1) pid ... till ... (6) session
-           "%*d %*d %*u %*lu %*lu %*lu " // (7) tty_nr .. till .. (12) majflt
-           "%*lu %lu %lu %ld %ld %*ld ", // (13) cmajflt .till .. (18) priority
+           "%*d %*d %*u %*u %*u %*u " // (7) tty_nr .. till .. (12) majflt
+           "%*u %lu %lu %ld %ld %*d ", // (13) cmajflt .till .. (18) priority
            &utime, &stime, &cutime, &cstime);
 
     if (rd != 4)   // couldn't read the four fields above
@@ -87,7 +91,7 @@ get_os_uptime(void) {
     if (result != 0)
         return -1;
     else
-        return s_info.uptime;
+        return kern_info.uptime;
 }
 
 static
@@ -103,10 +107,11 @@ get_pid_start_time_ticks(int process_id) {
 
     sprintf(pid_stat_fname, "/proc/%d/stat", process_id);
 
-    if ((pid_stat_fd = open(filename, O_RDONLY)) < 0)
+    if ((pid_stat_fd = open(pid_stat_fname, O_RDONLY)) < 0)
         return 0;
 
-    contents_read = read(fd, pid_stat_contents, sizeof pid_stat_contents - 1);
+    contents_read = read(pid_stat_fd, pid_stat_contents,
+                         sizeof pid_stat_contents - 1);
     close(pid_stat_fd);
     if (contents_read <= 0)
        return 0;
@@ -119,9 +124,9 @@ get_pid_start_time_ticks(int process_id) {
     rd = sscanf(
            pid_stat_contents,
            "%*d %*s %*c %*d %*d %*d "    // (1) pid ... till ... (6) session
-           "%*d %*d %*u %*lu %*lu %*lu " // (7) tty_nr .. till .. (12) majflt
-           "%*lu %*lu %*lu %*ld %*ld %*ld "  // (13) cmajflt till (18) priority
-           "%*ld %*ld %*ld %llu %*lu ", // (19) nice ... till ... (23) vsize
+           "%*d %*d %*u %*u %*u %*u " // (7) tty_nr .. till .. (12) majflt
+           "%*u %*u %*u %*d %*d %*d "  // (13) cmajflt till (18) priority
+           "%*d %*d %*d %llu %*u ", // (19) nice ... till ... (23) vsize
            &start_time_ticks);
 
     if (rd != 1)   // couldn't read the field above
@@ -148,10 +153,10 @@ get_pid_rss_mem_kb(int process_id) {
 
     sprintf(pid_statm_fname, "/proc/%d/statm", process_id);
 
-    if ((pid_statm_fd = open(filename, O_RDONLY)) < 0)
+    if ((pid_statm_fd = open(pid_statm_fname, O_RDONLY)) < 0)
         return -1;
 
-    contents_read = read(fd, pid_statm_contents,
+    contents_read = read(pid_statm_fd, pid_statm_contents,
                          sizeof pid_statm_contents - 1);
     close(pid_statm_fd);
     if (contents_read <= 0)
@@ -164,7 +169,7 @@ get_pid_rss_mem_kb(int process_id) {
     int rd;
     rd = sscanf(
            pid_statm_contents,
-           "%*ld %ld %*ld ",   // (1) size (2) resident (3) shared
+           "%*d %ld %*d ",   // (1) size (2) resident (3) shared
            &rss_mem_pages);
 
     if (rd != 1)   // couldn't read the field above
@@ -301,6 +306,7 @@ handle_dynamicRatioProcessCpu(netsnmp_mib_handler *handler,
     switch(reqinfo->mode) {
 
         case MODE_GET:
+            ;
             /* TODO: update CPU backend process metric in
              *       struct my_backend_process_metrics above from the local
              *       /proc/<backend_pid>/stat file.
@@ -316,14 +322,15 @@ handle_dynamicRatioProcessCpu(netsnmp_mib_handler *handler,
                            //       process that the load-balancer is
                            //       interested in to find its CPU availability.
 
-            long long pid_cpu_usage_ticks = get_pid_cpu_stats(pid);
+            long pid_cpu_usage_ticks = get_pid_cpu_stats(pid);
 
-            // these two calls down here, we don't need to call them each
-            // time that "handle_dynamicRatioProcessCpu" is called for an
-            // SNMP GET request, since they are constant after initialization
             long os_uptime = get_os_uptime();
-            long hertz = sysconf(_SC_CLK_TCK);
             // TODO: ERROR checking: if (os_uptime < 0) ERROR
+
+            // this call down here, we don't need to call it each time that
+            // "handle_dynamicRatioProcessCpu" is called for an SNMP GET
+            // request, since it is constant after initialization
+            long hertz = sysconf(_SC_CLK_TCK);
 
             // this call below is not necesarily constant, since the "pid" may
             // die and another "pid" (process), for the same backend program,
@@ -336,8 +343,8 @@ handle_dynamicRatioProcessCpu(netsnmp_mib_handler *handler,
             // how long this process has been running (in seconds)
             long running_seconds = os_uptime - (pid_start_time_ticks / hertz);
 
-            int pid_cpu_usage_percentage = 100 *
-                            ((pid_cpu_usage_ticks / hertz) / running_seconds);
+            int pid_cpu_usage_percentage = 
+                     (( 100 * pid_cpu_usage_ticks) / hertz) / running_seconds;
             // TODO: the above two calculations find the CPU% used by the
             // "pid" since the beginning of thee program. Pbby another way
             // would be to find the CPU% used by the process _since_ the last
@@ -388,6 +395,7 @@ handle_dynamicRatioProcessMemory(netsnmp_mib_handler *handler,
     switch(reqinfo->mode) {
 
         case MODE_GET:
+            ;
             /* TODO: update memory backend process metric, reading
              *       /proc/<backend_pid>/{status,statm,maps,smaps}.
              *       See also as well comment for the CPU backend process
