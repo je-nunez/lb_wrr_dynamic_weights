@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <linux/limits.h>
 #include <linux/kernel.h>
+#include <regex.h>
 #include <stdbool.h>
 #include <sys/sysinfo.h>
 #include <unistd.h>
@@ -14,7 +15,89 @@
 #include <net-snmp/net-snmp-config.h>
 #include <net-snmp/net-snmp-includes.h>
 #include <net-snmp/agent/net-snmp-agent-includes.h>
+
 #include "dynamicRatioProcess.h"
+
+static int counter_regexps_on_process_cmd_line = 0;
+
+static regex_t regexps_on_proc_cmd_line[MAX_NUMBER_REGEXPS_ON_PROC_CMD_LINE];
+
+static
+void config_handle_LbDWRRregexpCmdLine(const char *key, char *value) {
+    if (strcasecmp(CONFIG_TOKEN_REGEXP_ON_PROC_CMD_LINE, key) != 0)
+        return;
+
+    if (counter_regexps_on_process_cmd_line >=
+              MAX_NUMBER_REGEXPS_ON_PROC_CMD_LINE) {
+        // TODO: report a warning: "too many regexps requested in snmpd.conf"
+        //       so discarding this "value"
+        return;
+    }
+    int res = regcomp(
+                &regexps_on_proc_cmd_line[counter_regexps_on_process_cmd_line],
+                value, REG_EXTENDED
+              );
+    if (res != 0) {
+         // TODO: report a warning on an invaled extended reg-exp "value"
+         return;
+    }
+
+    // If regcomp() was successful, then increment the counter
+    counter_regexps_on_process_cmd_line ++;
+}
+
+static
+void config_free_LbDWRRregexpCmdLine(void) {
+
+    for (int i=0; i < counter_regexps_on_process_cmd_line; i++) {
+        regfree(&regexps_on_proc_cmd_line[i]);
+    }
+
+    counter_regexps_on_process_cmd_line = 0;
+}
+
+
+/** Initializes the dynamicRatioProcess .SO module for the SNMPD agent */
+void
+init_dynamicRatioProcess(void)
+{
+    const oid dynamicRatioProcessCpu_oid[] = { 1,3,6,1,4,1,99999,3,1 };
+    const oid dynamicRatioProcessMemory_oid[] = { 1,3,6,1,4,1,99999,3,2 };
+
+  DEBUGMSGTL(("dynamicRatioProcess", "Initializing\n"));
+
+    netsnmp_register_scalar(
+        netsnmp_create_handler_registration("dynamicRatioProcessCpu",
+                               handle_dynamicRatioProcessCpu,
+                               dynamicRatioProcessCpu_oid,
+                               OID_LENGTH(dynamicRatioProcessCpu_oid),
+                               HANDLER_CAN_RONLY
+        ));
+    netsnmp_register_scalar(
+        netsnmp_create_handler_registration("dynamicRatioProcessMemory",
+                               handle_dynamicRatioProcessMemory,
+                               dynamicRatioProcessMemory_oid,
+                               OID_LENGTH(dynamicRatioProcessMemory_oid),
+                               HANDLER_CAN_RONLY
+        ));
+
+    snmpd_register_config_handler(
+        CONFIG_TOKEN_REGEXP_ON_PROC_CMD_LINE,
+        config_handle_LbDWRRregexpCmdLine,
+        config_free_LbDWRRregexpCmdLine,
+        CONFIG_TOKEN_REGEXP_ON_PROC_CMD_LINE " <extend-reg-expr>"
+        "\n\n"
+        "# Specify a extended regular expression to match on the process' "
+        "command-line to identify\n"
+        "# only those processes to report to the load-balancer for its "
+        "dynamic weighted round-robin.\n"
+        "# That extended regular expression will be matched on any substring "
+        "in /proc/*/cmdline.\n"
+        "# " CONFIG_TOKEN_REGEXP_ON_PROC_CMD_LINE " can be specified multiple "
+        "times, meaning to match\n"
+        "# at least any of the reg-exprs indicated."
+    );
+}
 
 
 // TODO: Review backend process metrics. These also include contextual
@@ -270,27 +353,6 @@ get_linux_avail_mem_kb(void) {
 }
 
 
-/** Initializes the dynamicRatioProcess module */
-void
-init_dynamicRatioProcess(void)
-{
-    const oid dynamicRatioProcessCpu_oid[] = { 1,3,6,1,4,1,99999,3,1 };
-    const oid dynamicRatioProcessMemory_oid[] = { 1,3,6,1,4,1,99999,3,2 };
-
-  DEBUGMSGTL(("dynamicRatioProcess", "Initializing\n"));
-
-    netsnmp_register_scalar(
-        netsnmp_create_handler_registration("dynamicRatioProcessCpu", handle_dynamicRatioProcessCpu,
-                               dynamicRatioProcessCpu_oid, OID_LENGTH(dynamicRatioProcessCpu_oid),
-                               HANDLER_CAN_RONLY
-        ));
-    netsnmp_register_scalar(
-        netsnmp_create_handler_registration("dynamicRatioProcessMemory", handle_dynamicRatioProcessMemory,
-                               dynamicRatioProcessMemory_oid, OID_LENGTH(dynamicRatioProcessMemory_oid),
-                               HANDLER_CAN_RONLY
-        ));
-}
-
 int
 handle_dynamicRatioProcessCpu(netsnmp_mib_handler *handler,
                           netsnmp_handler_registration *reginfo,
@@ -317,6 +379,9 @@ handle_dynamicRatioProcessCpu(netsnmp_mib_handler *handler,
              *       values from these systems, which don't update their
              *       metrics every 10-20 seconds that the load balancer
              *       queries for the current dynamic metrics. */
+
+            /* TODO 2: use "regexps_on_proc_cmd_line" to find out which pids'
+             *         whose metrics to gather. */
             int pid = 1;   // Placeholder "pid = 1"
                            // TODO: find the real process-ID of the backend
                            //       process that the load-balancer is
@@ -343,7 +408,7 @@ handle_dynamicRatioProcessCpu(netsnmp_mib_handler *handler,
             // how long this process has been running (in seconds)
             long running_seconds = os_uptime - (pid_start_time_ticks / hertz);
 
-            int pid_cpu_usage_percentage = 
+            int pid_cpu_usage_percentage =
                      (( 100 * pid_cpu_usage_ticks) / hertz) / running_seconds;
             // TODO: the above two calculations find the CPU% used by the
             // "pid" since the beginning of thee program. Pbby another way
@@ -400,6 +465,9 @@ handle_dynamicRatioProcessMemory(netsnmp_mib_handler *handler,
              *       /proc/<backend_pid>/{status,statm,maps,smaps}.
              *       See also as well comment for the CPU backend process
              *       metric. */
+
+            /* TODO 2: use "regexps_on_proc_cmd_line" to find out which pids'
+             *         whose metrics to gather. */
 
             int pid = 1;   // Placeholder "pid = 1"
                            // TODO: find the real process-ID of the backend

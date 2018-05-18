@@ -5,6 +5,17 @@
 #ifndef DYNAMICRATIOPROCESS_H
 #define DYNAMICRATIOPROCESS_H
 
+/* Our custom token in the snmpd.conf config file to specify a
+ * regular-expression on the process(es)'s command-line
+ * to distinguish the processes to report to the load-balancer. */
+
+#define CONFIG_TOKEN_REGEXP_ON_PROC_CMD_LINE  "LbDWRRregexpCmdLine"
+
+/* Maximum number of regular-expressions on the process(es)'s command-line
+ * to distinguish the ones to report to the load-balancer. */
+
+#define MAX_NUMBER_REGEXPS_ON_PROC_CMD_LINE   30
+
 /* function declarations */
 void init_dynamicRatioProcess(void);
 Netsnmp_Node_Handler handle_dynamicRatioProcessCpu;

@@ -67,11 +67,17 @@ To test, once configured:
 
 # TODO
 
-. How to configure the name of the backend process to report through SNMP (or any characteristic of the backend process to distinguish it) -- right now it is reporting now about PID=1, because it doesn't know how to distinguish the backend process to report about.
+1. How to configure the name of the backend process to report through SNMP (or any characteristic of the backend process to distinguish it) -- right now it is reporting now about PID=1, because it doesn't know how to distinguish the backend process to report about.
 
-. Related to the above, handle the case that the backend process has children or "sub-agents" (ie., independent processes with which the backend process communicates through IPC), so that it is not a single PID.
+2. Related to the above, handle the case that the backend process has children or "sub-agents" (ie., independent processes with which the backend process communicates through IPC), so that it is not a single PID.
 
-. For the value of the memory metric, to know whether to report to the load-balancer the backend process(es) size, or, alternatively, the available memory (under the rationale that, among a set of backend processes served by the load-balancer, if one of the backend processes happens to be running in a machine or container with more available memory, then the load-balancer should favored it -*if the values of all the other metrics are the same, e.g., health checks, CPU metrics, etc*). Note that, if all the backend processes run in machines or containers with the same amount of *total* memory each one, then the first memory metric (the process(es) size) is related to the second memory metric (the available memory): `available_memory ~ is directly proportional to ~ unique_total_memory - processes_size`, so that for the dynamic weighted round robin in the load-balancer either memory metric may be used (but with different coefficients).
+For points 1 and 2, probably use in the "snmpd.conf" file:
 
-. Other, different metrics about the backend processes, besides the above two (CPU% and a memory metric).
+        LbDWRRregexpCmdLine   <extended-regular-expression-on-backend-process-command-line>
+
+which can be specified multiple times in "snmpd.conf" to indicate all the processes to add together in the metrics.
+
+3. For the value of the memory metric, to know whether to report to the load-balancer the backend process(es) size, or, alternatively, the available memory (under the rationale that, among a set of backend processes served by the load-balancer, if one of the backend processes happens to be running in a machine or container with more available memory, then the load-balancer should favored it -*if the values of all the other metrics are the same, e.g., health checks, CPU metrics, etc*). Note that, if all the backend processes run in machines or containers with the same amount of *total* memory each one, then the first memory metric (the process(es) size) is related to the second memory metric (the available memory): `available_memory ~ is directly proportional to ~ unique_total_memory - processes_size`, so that for the dynamic weighted round robin in the load-balancer either memory metric may be used (but with different coefficients).
+
+4. Other, different metrics about the backend processes, besides the above two (CPU% and a memory metric).
 
