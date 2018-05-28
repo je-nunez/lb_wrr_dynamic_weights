@@ -4,7 +4,10 @@
  */
 
 #include <ctype.h>
+#include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <linux/limits.h>
 #include <linux/kernel.h>
 #include <regex.h>
@@ -35,7 +38,7 @@ void config_handle_LbDWRRregexpCmdLine(const char *key, char *value) {
     }
     int res = regcomp(
                 &regexps_on_proc_cmd_line[counter_regexps_on_process_cmd_line],
-                value, REG_EXTENDED
+                value, REG_EXTENDED|REG_NOSUB
               );
     if (res != 0) {
          // TODO: report a warning on an invaled extended reg-exp "value"
@@ -117,10 +120,90 @@ static struct backend_process_metrics {
     // by default)
 } my_backend_process_metrics;
 
+static
+bool pid_matches_any_regexp(pid_t pid) {
+
+    bool ret_result = false;
+
+    char pid_cmdline[PATH_MAX+1];
+    sprintf(pid_cmdline, "/proc/%d/cmdline", pid);
+    int  pid_cmdline_fd;
+    if ((pid_cmdline_fd = open(pid_cmdline, O_RDONLY)) < 0)
+         return false;
+
+    long arg_max = sysconf(_SC_ARG_MAX);
+    char* cmdline_buffer = (char*) malloc((arg_max+1) * sizeof(char));
+    int contents_read;
+
+    contents_read = read(pid_cmdline_fd, cmdline_buffer, arg_max);
+    close(pid_cmdline_fd);
+    if (contents_read <= 0) goto func_exit; // we need to free(cmdline_buffer)
+
+    // convert '\0' separating tokens in /proc/<pid>/cmdline to spaces
+    for (int i=0; i < contents_read - 1; i++)
+        if (cmdline_buffer[i] == '\0') cmdline_buffer[i] = ' ';
+
+    for(int regexp = 0; regexp < counter_regexps_on_process_cmd_line;
+            regexp++ ) {
+
+        int res = regexec(&regexps_on_proc_cmd_line[regexp],
+                          cmdline_buffer, 0, NULL, 0);
+        if (res == 0) { // regular expression matched
+            ret_result = true;
+            break;
+        }
+    }
+
+  func_exit:
+    free(cmdline_buffer);
+
+    return ret_result;
+}
+
+static
+pid_t* get_pids_matching_regexps(void) {
+    DIR* proc_dir = opendir("/proc");
+
+    if (proc_dir == NULL) return NULL;
+
+    struct dirent* dir_entry;
+
+    int size_arr = 10, count_elems = 0;
+    pid_t* matching_pids = (pid_t*)calloc(size_arr, sizeof(pid_t));
+    if (matching_pids == NULL) return NULL;   // TODO: print error
+
+    while ( (dir_entry = readdir(proc_dir)) ) {
+        if(dir_entry->d_type != DT_DIR || !isdigit(dir_entry->d_name[0]))
+            continue;
+
+        pid_t pid = strtol(dir_entry->d_name, NULL, 10);
+        if (pid == 0 || errno == ERANGE)
+            continue;
+
+        if (pid_matches_any_regexp(pid)) {
+           if (count_elems >= size_arr) {
+               size_arr += 10;
+               pid_t* new_pids = (pid_t*) realloc(matching_pids,
+                                                  size_arr * sizeof(pid_t));
+               if (new_pids == NULL) {
+                   free(matching_pids);
+                   return NULL;   // TODO: print error that realloc() failed
+               }
+               matching_pids = new_pids;
+               for (int i=count_elems; i<size_arr; i++)
+                   matching_pids[i] = 0;
+           }
+           matching_pids[count_elems++] = pid;
+        }
+    }
+    closedir(proc_dir);
+
+    return matching_pids;
+}
 
 static
 long
-get_pid_cpu_stats(int process_id) {
+get_pid_cpu_stats(pid_t process_id) {
 
     unsigned long utime;   // the signed or unsigned long is given by...
     unsigned long stime;   // format specifier %lu or %ld in proc(5) ...
@@ -179,7 +262,7 @@ get_os_uptime(void) {
 
 static
 unsigned long long
-get_pid_start_time_ticks(int process_id) {
+get_pid_start_time_ticks(pid_t process_id) {
 
     unsigned long long start_time_ticks;
 
@@ -225,7 +308,7 @@ get_pid_start_time_ticks(int process_id) {
 
 static
 long
-get_pid_rss_mem_kb(int process_id) {
+get_pid_rss_mem_kb(pid_t process_id) {
 
     long rss_mem_pages;
 
@@ -380,12 +463,15 @@ handle_dynamicRatioProcessCpu(netsnmp_mib_handler *handler,
              *       metrics every 10-20 seconds that the load balancer
              *       queries for the current dynamic metrics. */
 
-            /* TODO 2: use "regexps_on_proc_cmd_line" to find out which pids'
-             *         whose metrics to gather. */
-            int pid = 1;   // Placeholder "pid = 1"
-                           // TODO: find the real process-ID of the backend
-                           //       process that the load-balancer is
-                           //       interested in to find its CPU availability.
+            pid_t pid = 1;   // Placeholder "pid = 1"
+
+            // TODO: iterate on the matching <pids> of the backend processes
+            //       that the load-balancer is interested in to find their CPU
+            //       availability.
+            //
+            // pid_t* matching_pids = get_pids_matching_regexps();
+            // ... iterate on matching_pids (as old code below on pid=1) ...
+            // free(matching_pids)
 
             long pid_cpu_usage_ticks = get_pid_cpu_stats(pid);
 
@@ -469,11 +555,15 @@ handle_dynamicRatioProcessMemory(netsnmp_mib_handler *handler,
             /* TODO 2: use "regexps_on_proc_cmd_line" to find out which pids'
              *         whose metrics to gather. */
 
-            int pid = 1;   // Placeholder "pid = 1"
-                           // TODO: find the real process-ID of the backend
-                           //       process that the load-balancer is
-                           //       interested in to find its RSS RAM
-                           //       availability.
+            pid_t pid = 1;   // Placeholder "pid = 1"
+
+            // TODO: iterate on the matching <pids> of the backend processes
+            //       that the load-balancer is interested in to find their CPU
+            //       availability.
+            //
+            // pid_t* matching_pids = get_pids_matching_regexps();
+            // ... iterate on matching_pids (as old code below on pid=1) ...
+            // free(matching_pids)
 
             // we can either return to the load-balancer the memory size of
             // the process (so the bigger the backend process, probably the
@@ -489,7 +579,10 @@ handle_dynamicRatioProcessMemory(netsnmp_mib_handler *handler,
             // running under a Linux control group, "cgcreate -g memory:..."
 
             long rss_pid_kb = get_pid_rss_mem_kb(pid);  // the RSS (in KB)
-            long system_avail_mem_kb = get_linux_avail_mem_kb();
+            long system_avail_mem_kb = get_linux_avail_mem_kb(); // we don't
+                                 // need to iterate on the matching pids with
+                                 // this second alternative through
+                                 // "get_linux_avail_mem_kb()"
 
             my_backend_process_metrics.metric_memory = rss_pid_kb; // the first
 
