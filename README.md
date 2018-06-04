@@ -47,11 +47,24 @@ Dynamic Feedback Load Balancing Scheduling, at
       # To compile Net-SNMP sub-agent (not used):
       # env MIBS="+DYNAMIC-WEIGHT-BACK-PROCESS-MIB" mib2c -c subagent.m2c       "$oid"
 
+Use:
+
+      make compile
+
+to compile the source code into a shared object, `dynamicRatioProcess.so`.
+
 Once the shared object is compiled, then add in the `snmpd.conf` config file:
 
       dlmod  dynamicRatioProcess  /<path>/<to>/dynamicRatioProcess.so
 
-and restart `snmpd` after that.
+as well as one or more instructions:
+
+      LbDWRRregexpCmdLine <extended-regular-expr-for-backend-processes>
+
+in order to know, by their command-lines, which backend processes to report to
+the load balancer. (The metrics from all the matching processes to at least one
+`LbDWRRregexpCmdLine` are added up together and the total is the one reported
+to the load-balancer.) Then restart `snmpd` after these changes to "snmpd.conf".
 
 To test, once configured:
 
@@ -65,19 +78,11 @@ To test, once configured:
        
       snmpget  [-options...]  localhost  1.3.6.1.4.1.99999.3.2.0
 
+# NOTES
+
+There is a setting, `FIND_MEMORY_METRIC_ONLY_BY_AVAILABLE_MEM` in `dynamicRatioProcess.h`, which determines how the value of the memory metric is calculated, whether to report to the load-balancer the sum of the backend process(es)'s RSS sizes, or, alternatively, simply to report the available memory, under the rationale that, among a set of backend processes served by the load-balancer, if one of the backend processes happens to be running in a machine or container with more available memory, then the load-balancer should favored it -*if the values of all the other metrics are the same, e.g., health checks, CPU metrics, etc*. (Note that, if all the backend processes run in machines or containers with the same amount of *total* memory each one, then the first memory metric (sum of the process(es) RSS size) is related to the second memory metric (the available memory): `available_memory ~ is directly proportional to ~ unique_total_memory - sum_processes_size`, so that for the dynamic weighted round robin in the load-balancer either memory metric may be used -but with different coefficients.)
+
 # TODO
 
-1. How to configure the name of the backend process to report through SNMP (or any characteristic of the backend process to distinguish it) -- right now it is reporting now about PID=1, because it doesn't know how to distinguish the backend process to report about.
-
-2. Related to the above, handle the case that the backend process has children or "sub-agents" (ie., independent processes with which the backend process communicates through IPC), so that it is not a single PID.
-
-For points 1 and 2, probably use in the "snmpd.conf" file:
-
-        LbDWRRregexpCmdLine   <extended-regular-expression-on-backend-process-command-line>
-
-which can be specified multiple times in "snmpd.conf" to indicate all the processes to add together in the metrics.
-
-3. For the value of the memory metric, to know whether to report to the load-balancer the backend process(es) size, or, alternatively, the available memory (under the rationale that, among a set of backend processes served by the load-balancer, if one of the backend processes happens to be running in a machine or container with more available memory, then the load-balancer should favored it -*if the values of all the other metrics are the same, e.g., health checks, CPU metrics, etc*). Note that, if all the backend processes run in machines or containers with the same amount of *total* memory each one, then the first memory metric (the process(es) size) is related to the second memory metric (the available memory): `available_memory ~ is directly proportional to ~ unique_total_memory - processes_size`, so that for the dynamic weighted round robin in the load-balancer either memory metric may be used (but with different coefficients).
-
-4. Other, different metrics about the backend processes, besides the above two (CPU% and a memory metric).
+1. Other, different metrics about the backend processes, besides the above two (CPU% and a memory metric).
 
