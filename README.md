@@ -66,6 +66,21 @@ the load balancer. (The metrics from all the matching processes to at least one
 `LbDWRRregexpCmdLine` are added up together and the total is the one reported
 to the load-balancer.) Then restart `snmpd` after these changes to "snmpd.conf".
 
+An example of `snmpd.conf` sections, supposing this shared object,
+`dynamicRatioProcess.so`, once compiled (above) is copied to
+`/usr/local/lib/dynamicRatioProcess.so`:
+
+      # snmpd.conf ...
+      # ...
+      dlmod  dynamicRatioProcess  /usr/local/lib/dynamicRatioProcess.so
+      #
+      # LbDWRRregexpCmdLine specifies a extended reg-expr to match on the
+      # processes command-line to identify the backend processes for the
+      # load balancer.
+      #
+      LbDWRRregexpCmdLine  my_first_backend_processes_name
+      LbDWRRregexpCmdLine  my_2nd_backend_processes_name.*certain-cmd-line-arg
+
 To test, once configured:
 
       # Get CPU metric of the backend process (its CPU%)
