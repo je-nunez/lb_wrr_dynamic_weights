@@ -16,8 +16,11 @@
 #include <unistd.h>
 
 #include <net-snmp/net-snmp-config.h>
-#include <net-snmp/net-snmp-includes.h>
+#include <net-snmp/library/container.h>
 #include <net-snmp/agent/net-snmp-agent-includes.h>
+#include <net-snmp/library/snmp_logging.h>
+#include <net-snmp/net-snmp-includes.h>
+#include <net-snmp/output_api.h>
 
 #include "dynamicRatioProcess.h"
 
@@ -32,8 +35,11 @@ void config_handle_LbDWRRregexpCmdLine(const char *key, char *value) {
 
     if (counter_regexps_on_process_cmd_line >=
               MAX_NUMBER_REGEXPS_ON_PROC_CMD_LINE) {
-        // TODO: report a warning: "too many regexps requested in snmpd.conf"
-        //       so discarding this "value"
+        snmp_log(LOG_WARNING,
+                 "Too many regexps requested in snmpd.conf for '"
+                 CONFIG_TOKEN_REGEXP_ON_PROC_CMD_LINE
+                 "'. Ignoring regexps after maximum allowable: %d\n",
+                 MAX_NUMBER_REGEXPS_ON_PROC_CMD_LINE);
         return;
     }
     int res = regcomp(
@@ -41,8 +47,13 @@ void config_handle_LbDWRRregexpCmdLine(const char *key, char *value) {
                 value, REG_EXTENDED|REG_NOSUB
               );
     if (res != 0) {
-         // TODO: report a warning on an invaled extended reg-exp "value"
-         return;
+        snmp_log(LOG_WARNING,
+                 "Invalid regexp number %d in option '"
+                 CONFIG_TOKEN_REGEXP_ON_PROC_CMD_LINE
+                 "' in snmpd.conf: '%s'. Stopped loading more regexps.\n",
+                 counter_regexps_on_process_cmd_line + 1,
+                 value);
+        return;
     }
 
     // If regcomp() was successful, then increment the counter
@@ -64,6 +75,9 @@ void config_free_LbDWRRregexpCmdLine(void) {
 void
 init_dynamicRatioProcess(void)
 {
+    // Change here to use another SNMP OID instead of, for example,
+    // [snmpget] 1.3.6.1.4.1.99999.3.1.0 for getting the CPU metric to the
+    // load balancer.
     const oid dynamicRatioProcessCpu_oid[] = { 1,3,6,1,4,1,99999,3,1 };
     const oid dynamicRatioProcessMemory_oid[] = { 1,3,6,1,4,1,99999,3,2 };
 
@@ -120,6 +134,11 @@ static struct backend_process_metrics {
     // by default)
 } my_backend_process_metrics;
 
+struct processes_matching_regexps {
+    int count_pids;
+    pid_t* matching_pids;
+};
+
 static
 bool pid_matches_any_regexp(pid_t pid) {
 
@@ -161,16 +180,31 @@ bool pid_matches_any_regexp(pid_t pid) {
 }
 
 static
-pid_t* get_pids_matching_regexps(void) {
+struct processes_matching_regexps get_pids_matching_regexps(void) {
+
+    struct processes_matching_regexps ret_result = {
+               .count_pids = 0,
+               .matching_pids = NULL
+    };
+
     DIR* proc_dir = opendir("/proc");
 
-    if (proc_dir == NULL) return NULL;
+    if (proc_dir == NULL) {
+        snmp_log(LOG_ERR,
+                 "Could not open /proc directory in this Linux system.\n");
+        return ret_result;
+    }
 
     struct dirent* dir_entry;
 
     int size_arr = 10, count_elems = 0;
     pid_t* matching_pids = (pid_t*)calloc(size_arr, sizeof(pid_t));
-    if (matching_pids == NULL) return NULL;   // TODO: print error
+    if (matching_pids == NULL) {
+        snmp_log(LOG_ERR,
+                 "Could not allocate memory with calloc() at %s@%s\n",
+                 __func__, __FILE__);
+        return ret_result;
+    }
 
     while ( (dir_entry = readdir(proc_dir)) ) {
         if(dir_entry->d_type != DT_DIR || !isdigit(dir_entry->d_name[0]))
@@ -186,8 +220,11 @@ pid_t* get_pids_matching_regexps(void) {
                pid_t* new_pids = (pid_t*) realloc(matching_pids,
                                                   size_arr * sizeof(pid_t));
                if (new_pids == NULL) {
+                   snmp_log(LOG_ERR,
+                       "Could not reallocate memory with realloc() at %s@%s\n",
+                       __func__, __FILE__);
                    free(matching_pids);
-                   return NULL;   // TODO: print error that realloc() failed
+                   return ret_result;
                }
                matching_pids = new_pids;
                for (int i=count_elems; i<size_arr; i++)
@@ -198,7 +235,10 @@ pid_t* get_pids_matching_regexps(void) {
     }
     closedir(proc_dir);
 
-    return matching_pids;
+    ret_result.count_pids = count_elems;
+    ret_result.matching_pids = matching_pids;
+
+    return ret_result;
 }
 
 static
@@ -254,9 +294,11 @@ long
 get_os_uptime(void) {
     struct sysinfo kern_info;
     int result = sysinfo(&kern_info);
-    if (result != 0)
+    if (result != 0) {
+        snmp_log(LOG_ERR, "Call to sysinfo() failed, %s@%s\n",
+                 __func__, __FILE__);
         return -1;
-    else
+    } else
         return kern_info.uptime;
 }
 
@@ -273,14 +315,18 @@ get_pid_start_time_ticks(pid_t process_id) {
 
     sprintf(pid_stat_fname, "/proc/%d/stat", process_id);
 
-    if ((pid_stat_fd = open(pid_stat_fname, O_RDONLY)) < 0)
+    if ((pid_stat_fd = open(pid_stat_fname, O_RDONLY)) < 0) {
+        snmp_log(LOG_WARNING, "Could not open file %s\n", pid_stat_fname);
         return 0;
+    }
 
     contents_read = read(pid_stat_fd, pid_stat_contents,
                          sizeof pid_stat_contents - 1);
     close(pid_stat_fd);
-    if (contents_read <= 0)
+    if (contents_read <= 0) {
+       snmp_log(LOG_WARNING, "Could not read from file %s\n", pid_stat_fname);
        return 0;
+    }
     pid_stat_contents[contents_read] = '\0';
 
     // scan the beginning of "/proc/%d/stat" till a field after
@@ -295,10 +341,11 @@ get_pid_start_time_ticks(pid_t process_id) {
            "%*d %*d %*d %llu %*u ", // (19) nice ... till ... (23) vsize
            &start_time_ticks);
 
-    if (rd != 1)   // couldn't read the field above
-        return 0;
-    else
-        return start_time_ticks;
+    if (rd != 1) {  // couldn't read the field above
+       snmp_log(LOG_WARNING, "Could not parse file %s\n", pid_stat_fname);
+       return 0;
+    } else
+       return start_time_ticks;
 }
 
 /*
@@ -319,14 +366,18 @@ get_pid_rss_mem_kb(pid_t process_id) {
 
     sprintf(pid_statm_fname, "/proc/%d/statm", process_id);
 
-    if ((pid_statm_fd = open(pid_statm_fname, O_RDONLY)) < 0)
+    if ((pid_statm_fd = open(pid_statm_fname, O_RDONLY)) < 0) {
+        snmp_log(LOG_WARNING, "Could not open file %s\n", pid_statm_fname);
         return -1;
+    }
 
     contents_read = read(pid_statm_fd, pid_statm_contents,
                          sizeof pid_statm_contents - 1);
     close(pid_statm_fd);
-    if (contents_read <= 0)
+    if (contents_read <= 0) {
+       snmp_log(LOG_WARNING, "Could not read from file %s\n", pid_statm_fname);
        return -2;
+    }
     pid_statm_contents[contents_read] = '\0';
 
     // scan the beginning of "/proc/%d/statm" till a field after "resident"
@@ -338,13 +389,15 @@ get_pid_rss_mem_kb(pid_t process_id) {
            "%*d %ld %*d ",   // (1) size (2) resident (3) shared
            &rss_mem_pages);
 
-    if (rd != 1)   // couldn't read the field above
+    if (rd != 1) {  // couldn't read the field above
+        snmp_log(LOG_WARNING, "Could not parse file %s\n", pid_statm_fname);
         return -3;
-    else {
+    } else {
         long bytes_in_page = sysconf(_SC_PAGESIZE);
         return (rss_mem_pages * bytes_in_page / 1024);
     }
 }
+
 
 /*
  * Returns the available memory (in KB) in Linux. If there is an error, it
@@ -385,8 +438,11 @@ get_linux_avail_mem_kb(void) {
     FILE * proc_meminfo;
     char line[256];
 
-    if ((proc_meminfo = fopen("/proc/meminfo", "r")) == NULL)
+    if ((proc_meminfo = fopen("/proc/meminfo", "r")) == NULL) {
+        snmp_log(LOG_ERR,
+                 "Could not open /proc/meminfo in this Linux system.\n");
         return -2;
+    }
 
     while (fgets(line, sizeof(line), proc_meminfo)) {
         bool this_is_mem_avail = false; // if this is "MemAvailable: "
@@ -423,9 +479,13 @@ get_linux_avail_mem_kb(void) {
         if (*token_start == 'k' || *token_start == 'K' || // KBs, or
             *token_start == '\n' || *token_start == '\0') // no unit of measure
             avail_mem_kb = value;     // KBs is the default unit, if omitted
-        else
-            continue;   // TODO:
-                        // error: it is a unit of measurement we didn't know
+        else {
+            snmp_log(LOG_CRIT,
+                     "We have found a yet-unprocessed unit of measure in "
+                     "/proc/meminfo, line: '%s'\n",
+                     line);
+            continue;
+        }
 
         if (this_is_mem_avail)
             break;     // the value of "MemAvailable:" is immediately good
@@ -463,58 +523,72 @@ handle_dynamicRatioProcessCpu(netsnmp_mib_handler *handler,
              *       metrics every 10-20 seconds that the load balancer
              *       queries for the current dynamic metrics. */
 
-            pid_t pid = 1;   // Placeholder "pid = 1"
-
-            // TODO: iterate on the matching <pids> of the backend processes
-            //       that the load-balancer is interested in to find their CPU
-            //       availability.
-            //
-            // pid_t* matching_pids = get_pids_matching_regexps();
-            // ... iterate on matching_pids (as old code below on pid=1) ...
-            // free(matching_pids)
-
-            long pid_cpu_usage_ticks = get_pid_cpu_stats(pid);
-
-            long os_uptime = get_os_uptime();
-            // TODO: ERROR checking: if (os_uptime < 0) ERROR
+            int total_cpu_usage_percentage = 0;
 
             // this call down here, we don't need to call it each time that
             // "handle_dynamicRatioProcessCpu" is called for an SNMP GET
             // request, since it is constant after initialization
             long hertz = sysconf(_SC_CLK_TCK);
 
-            // this call below is not necesarily constant, since the "pid" may
-            // die and another "pid" (process), for the same backend program,
-            // may start. Ie., the "pid" may change across calls to
-            // "handle_dynamicRatioProcessCpu"
-            unsigned long long pid_start_time_ticks =
+            long os_uptime = get_os_uptime();
+            if (os_uptime < 0) goto return_value_to_snmp;
+
+            struct processes_matching_regexps matching_pids =
+                   get_pids_matching_regexps();
+
+            for (int i=0; i<matching_pids.count_pids; i++) {
+                pid_t pid = matching_pids.matching_pids[i];
+                long pid_cpu_usage_ticks = get_pid_cpu_stats(pid);
+
+                // this call below is not necesarily constant, since the "pid"
+                // may die and another "pid" (process), for the same backend
+                // program, may start. Ie., the "pid" may change across calls
+                // to "handle_dynamicRatioProcessCpun
+                unsigned long long pid_start_time_ticks =
                                               get_pid_start_time_ticks(pid);
-            // TODO: ERROR checking: if (pid_start_time_ticks == 0) ERROR
+                if (pid_start_time_ticks == 0)
+                    continue;    // ignore this pid. Errors logged by callee
 
-            // how long this process has been running (in seconds)
-            long running_seconds = os_uptime - (pid_start_time_ticks / hertz);
+                // how long this process has been running (in seconds)
+                long running_seconds =
+                                os_uptime - (pid_start_time_ticks / hertz);
 
-            int pid_cpu_usage_percentage =
+                int pid_cpu_usage_percentage =
                      (( 100 * pid_cpu_usage_ticks) / hertz) / running_seconds;
-            // TODO: the above two calculations find the CPU% used by the
-            // "pid" since the beginning of thee program. Pbby another way
-            // would be to find the CPU% used by the process _since_ the last
-            // call to this function "handle_dynamicRatioProcessCpu", since it
-            // is supposed that the Load-Balancer took some decision on how
-            // much traffic to send to this backend process since the last call
-            // to this (SNMP) function (using dynamic weighted round-robin).
-            // If "pid" has changed since the last call to this function, or if
-            // this is the first time that this function has ever been called,
-            // then we would use the above value "pid_cpu_usage_percentage".
+
+                // TODO: the above two calculations found the CPU% used by the
+                // "pid" _since the beginning of thee program_. Pbby another
+                // way would be to find the CPU% used by the process _since_
+                // the last call to this function
+                // "handle_dynamicRatioProcessCpu", since it is supposed that
+                // the Load-Balancer took some decision on how much traffic to
+                // send to this backend process since the last call to this
+                // (SNMP) function (using dynamic weighted round-robin). This
+                // second alternative of the formula doesn't calculate the
+                // CPU%, but the first-derivative in time of the CPU% since
+                // last sample, to see how the Load-Balancer decisions have
+                // affected the load of this backend process. Note: If "pid"
+                // has changed since the last call to this function so it is
+                // a completely new "pid" we ever see, or if this is the first
+                // time that this function here has ever been called, then to
+                // find a first derivative has no sense yet for this first
+                // time.
+
+                total_cpu_usage_percentage += pid_cpu_usage_percentage;
+            }
+
+            free(matching_pids.matching_pids);
 
             // TODO: We can't truly use assert() here because this is a
             // Net-SNMP .SO extension, but in idea:
-            //
-            // assert( 0 <= pid_cpu_usage_percentage );
-            // assert( pid_cpu_usage_percentage <= 100 );
+            // int num_processors = get_nprocs_conf();
+            // assert( 0 <= total_cpu_usage_percentage );
+            // assert( total_cpu_usage_percentage <= 100 * num_processors );
+
+       return_value_to_snmp:
 
             my_backend_process_metrics.metric_cpu =
-                                             (u_long) pid_cpu_usage_percentage;
+                                           (u_long) total_cpu_usage_percentage;
 
             snmp_set_var_typed_value(requests->requestvb,
                          ASN_INTEGER,
@@ -552,19 +626,6 @@ handle_dynamicRatioProcessMemory(netsnmp_mib_handler *handler,
              *       See also as well comment for the CPU backend process
              *       metric. */
 
-            /* TODO 2: use "regexps_on_proc_cmd_line" to find out which pids'
-             *         whose metrics to gather. */
-
-            pid_t pid = 1;   // Placeholder "pid = 1"
-
-            // TODO: iterate on the matching <pids> of the backend processes
-            //       that the load-balancer is interested in to find their CPU
-            //       availability.
-            //
-            // pid_t* matching_pids = get_pids_matching_regexps();
-            // ... iterate on matching_pids (as old code below on pid=1) ...
-            // free(matching_pids)
-
             // we can either return to the load-balancer the memory size of
             // the process (so the bigger the backend process, probably the
             // less its weight in the load-balancer -if the load-balancer
@@ -578,13 +639,33 @@ handle_dynamicRatioProcessMemory(netsnmp_mib_handler *handler,
             // backend processes with a memory-limit (ulimit -v ...), or
             // running under a Linux control group, "cgcreate -g memory:..."
 
-            long rss_pid_kb = get_pid_rss_mem_kb(pid);  // the RSS (in KB)
+            long return_value = 0;
+
+#ifdef FIND_MEMORY_METRIC_ONLY_BY_AVAILABLE_MEM
             long system_avail_mem_kb = get_linux_avail_mem_kb(); // we don't
                                  // need to iterate on the matching pids with
                                  // this second alternative through
                                  // "get_linux_avail_mem_kb()"
+            return_value = system_avail_mem_kb;
+#else
+            long total_rss_mem_usage_kb = 0;
 
-            my_backend_process_metrics.metric_memory = rss_pid_kb; // the first
+            struct processes_matching_regexps matching_pids =
+                   get_pids_matching_regexps();
+
+            for (int i=0; i<matching_pids.count_pids; i++) {
+                pid_t pid = matching_pids.matching_pids[i];
+                long rss_pid_kb = get_pid_rss_mem_kb(pid);  // the RSS (in KB)
+                if (rss_pid_kb < 0)
+                    continue;    // ignore this pid. Errors logged by callee
+                total_rss_mem_usage_kb += rss_pid_kb;
+            }
+
+            free(matching_pids.matching_pids);
+            return_value = total_rss_mem_usage_kb;
+#endif
+
+            my_backend_process_metrics.metric_memory = return_value;
 
             snmp_set_var_typed_value(requests->requestvb,
                          ASN_INTEGER,

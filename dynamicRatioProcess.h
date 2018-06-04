@@ -5,6 +5,8 @@
 #ifndef DYNAMICRATIOPROCESS_H
 #define DYNAMICRATIOPROCESS_H
 
+#define FIND_MEMORY_METRIC_ONLY_BY_AVAILABLE_MEM   false
+
 /* Our custom token in the snmpd.conf config file to specify a
  * regular-expression on the process(es)'s command-line
  * to distinguish the processes to report to the load-balancer. */
